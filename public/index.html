@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#071014">
+<title>Ingerman — BR3XALITY</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+<header class="topbar">
+  <div class="brand"><div class="brandmark">I</div><div><b>INGERMAN</b><span>BR3XALITY ORIGINAL</span></div></div>
+  <div class="topstats"><div><small>CASE</small><b id="caseNo">01</b></div><div><small>SCORE</small><b id="score">000000</b></div></div>
+</header>
+<main>
+  <section class="hero">
+    <div><span class="eyebrow">CITY RESPONSE UNIT</span><h1>Protect the city.</h1><p>Patrol districts, locate incidents, and secure the scene before the situation escalates.</p></div>
+    <div class="mission"><span class="pulse"></span><div><small id="missionLabel">CURRENT OBJECTIVE</small><b id="status">Start your patrol.</b></div></div>
+  </section>
+  <section class="game-shell">
+    <div class="game-head"><div><b id="district">DOWNTOWN</b><span>LIVE PATROL</span></div><button id="pauseBtn" class="ghost">Pause</button></div>
+    <div class="canvas-wrap"><canvas id="game" width="1280" height="720"></canvas><div class="hud"><div class="hud-pill"><span class="dot"></span><span id="hudText">PATROL STANDBY</span></div><div class="compass">N</div></div></div>
+    <div class="controls">
+      <div class="dpad"><button data-key="up">▲</button><div><button data-key="left">◀</button><button data-key="down">▼</button><button data-key="right">▶</button></div></div>
+      <div class="actions"><button id="startBtn" class="primary">Start patrol</button><button id="secureBtn" class="secure">SECURE INCIDENT</button><button id="resetBtn" class="ghost">Reset</button></div>
+    </div>
+  </section>
+  <section class="briefing"><div><span class="eyebrow">FIELD BRIEFING</span><h2>How to play</h2></div><p>Use <b>WASD</b> or the arrow keys to drive the patrol unit. Reach the green incident marker and secure it. Each completed case creates a new incident.</p></section>
+</main>
+<footer><span>INGERMAN</span><span>BR3XALITY © 2026</span></footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
