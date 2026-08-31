@@ -1,3 +1,4 @@
+
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
 
 const canvas = document.getElementById('game');
@@ -63,6 +64,21 @@ function hash2(x, z) {
 }
 
 const ROAD_NAMES = ['Main', 'Market', 'Oak', 'Pine', 'Cedar', 'Lincoln', 'Central', 'River', 'Park', 'Sunset', 'Liberty', 'Maple', 'Broadway', 'Union', 'First', 'Second', 'Franklin', 'Washington', 'Madison', 'Jefferson'];
+
+// Word list for signs including Peter and Parker
+const SIGN_WORDS = [
+  'North', 'South', 'East', 'West', 'Upper', 'Lower', 'Old', 'New',
+  'Grand', 'Little', 'High', 'Low', 'Middle', 'Center', 'Eastside',
+  'Westside', 'Northend', 'Southend', 'Uptown', 'Downtown', 'Midtown',
+  'Lake', 'River', 'Hill', 'Valley', 'Park', 'Garden', 'Forest',
+  'Mountain', 'Meadow', 'Harbor', 'Beach', 'Bridge', 'Crossing',
+  'Junction', 'Corner', 'Square', 'Plaza', 'Circle', 'Court',
+  'Heights', 'Ridge', 'Point', 'View', 'Terrace', 'Lane', 'Drive',
+  'Way', 'Path', 'Trail', 'Route', 'Pass', 'Gate', 'Door',
+  'Spring', 'Summer', 'Autumn', 'Winter', 'Morning', 'Evening',
+  'Sunrise', 'Sunset', 'Moonlight', 'Starlight', 'Daybreak', 'Twilight',
+  'Peter', 'Parker'
+];
 
 function roadName(index, type) {
   const base = ROAD_NAMES[Math.abs(index | 0) % ROAD_NAMES.length];
@@ -250,33 +266,68 @@ function findIntersectionsForChunk(cx, cz) {
   return intersections;
 }
 
+// Helper function to generate a street name with random prefix and ABBREVIATED road type
+function generateStreetName(baseRoadName, type) {
+  const randomWord = SIGN_WORDS[Math.floor(Math.random() * SIGN_WORDS.length)];
+  const typeSuffix = type === 'freeway' ? 'Fwy' : 
+                     type === 'boulevard' ? 'Blvd' : 
+                     type === 'avenue' ? 'Ave' : 'St';
+  
+  return `${randomWord} ${baseRoadName} ${typeSuffix}`;
+}
+
+// Updated addSign function with dynamic sizing
 function addSign(g, x, z, text, rot) {
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(.035, .035, 1.5, 6), mat(0x697477));
   pole.position.set(x, .75, z);
   g.add(pole);
   
-  const sign = new THREE.Mesh(new THREE.BoxGeometry(1.45, .34, .05), mat(0x24523e));
+  // Measure text to determine sign width
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.font = 'bold 20px Arial';
+  const metrics = ctx.measureText(text);
+  const textWidthPx = metrics.width;
+  
+  // Calculate sign dimensions based on text width
+  // Base width 1.45 corresponds to ~18 chars. Scale accordingly.
+  const baseCharWidth = 1.45 / 18; 
+  let signWidth = Math.max(1.45, textWidthPx * 0.08); // 0.08 is a scaling factor from px to world units
+  signWidth = Math.min(signWidth, 3.5); // Cap max width
+  
+  const signHeight = 0.34;
+  const signDepth = 0.05;
+  
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(signWidth, signHeight, signDepth), mat(0x24523e));
   sign.position.set(x, 1.45, z);
   sign.rotation.y = rot;
   g.add(sign);
   
+  // Create texture with appropriate resolution
+  const texWidth = Math.ceil(textWidthPx) + 20; // Add padding
+  const texHeight = 64;
   const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 64;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 22px Arial';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 32);
+  c.width = texWidth;
+  c.height = texHeight;
+  const sctx = c.getContext('2d');
+  sctx.fillStyle = '#fff';
+  sctx.font = 'bold 20px Arial';
+  sctx.textAlign = 'center';
+  sctx.textBaseline = 'middle';
+  sctx.fillText(text, texWidth / 2, texHeight / 2);
   
   const plate = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.3, .3),
+    new THREE.PlaneGeometry(signWidth - 0.15, signHeight - 0.04), // Slightly smaller than sign box
     new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true })
   );
-  plate.position.set(x, 1.45, z);
+  plate.position.set(x, 1.45, z + (rot === 0 || rot === Math.PI ? 0.03 : 0) ); // Offset slightly forward
+  // Adjust plate rotation to match sign but face correct way relative to sign normal
   plate.rotation.y = rot;
-  g.add(plate)
+  // Push plate slightly out from sign face
+  const offset = signDepth / 2 + 0.01;
+  plate.position.x += Math.sin(rot) * offset;
+  plate.position.z += Math.cos(rot) * offset;
+  
+  g.add(plate);
 }
 
 function addRoad(g, r, ox, oz) {
@@ -289,6 +340,45 @@ function addRoad(g, r, ox, oz) {
   m.rotation.y = -Math.atan2(dz, dx);
   g.add(m);
   city.roads.push(r)
+}
+
+// Add a building spatial index for faster lookups
+const buildingGrid = new Map();
+
+function addToBuildingGrid(building) {
+  const cx = Math.floor(building.x / CHUNK_SIZE);
+  const cz = Math.floor(building.z / CHUNK_SIZE);
+  const key = `${cx},${cz}`;
+  
+  if (!buildingGrid.has(key)) {
+    buildingGrid.set(key, []);
+  }
+  buildingGrid.get(key).push(building);
+}
+
+// Optimized position check using spatial grid
+function isPositionClearFast(x, z, minDistance = 3) {
+  const pcx = Math.floor(x / CHUNK_SIZE);
+  const pcz = Math.floor(z / CHUNK_SIZE);
+  const searchRadius = Math.ceil(minDistance / CHUNK_SIZE) + 1;
+  
+  for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+    for (let dz = -searchRadius; dz <= searchRadius; dz++) {
+      const key = `${pcx + dx},${pcz + dz}`;
+      const buildings = buildingGrid.get(key);
+      
+      if (buildings) {
+        for (const b of buildings) {
+          const distX = Math.abs(x - b.x);
+          const distZ = Math.abs(z - b.z);
+          if (distX < (b.w / 2 + minDistance) && distZ < (b.d / 2 + minDistance)) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+  return true;
 }
 
 function buildChunk(cx, cz) {
@@ -360,6 +450,9 @@ function buildChunk(cx, cz) {
     local.push(b);
     city.buildings.push(b);
     
+    // Register building in spatial grid
+    addToBuildingGrid(b);
+    
     if (h >= 12) box(g, x, h, z, w * .35, .8, d * .35, 0x304c50);
   }
   
@@ -372,9 +465,13 @@ function buildChunk(cx, cz) {
     if (placedSigns.has(key)) continue;
     placedSigns.add(key);
     
-    addSign(g, inter.x + 1.4, inter.z + 1.4, inter.roadA.name, 
+    // Generate unique names for each intersection
+    const nameA = generateStreetName(inter.roadA.name, inter.roadA.type);
+    const nameB = generateStreetName(inter.roadB.name, inter.roadB.type);
+
+    addSign(g, inter.x + 1.4, inter.z + 1.4, nameA, 
             Math.atan2(inter.roadA.x2 - inter.roadA.x1, inter.roadA.z2 - inter.roadA.z1));
-    addSign(g, inter.x - 1.4, inter.z - 1.4, inter.roadB.name,
+    addSign(g, inter.x - 1.4, inter.z - 1.4, nameB,
             Math.atan2(inter.roadB.x2 - inter.roadB.x1, inter.roadB.z2 - inter.roadB.z1));
   }
   
@@ -517,14 +614,44 @@ scene.add(ring);
 
 const INCIDENT_MIN = 18, INCIDENT_MAX = 42;
 
+// Updated newTarget function with building collision avoidance
 function newTarget() {
-  const a = Math.random() * Math.PI * 2;
-  const r = INCIDENT_MIN + Math.random() * (INCIDENT_MAX - INCIDENT_MIN);
-  S.target.set(
-    Math.round((S.x + Math.cos(a) * r) / 3) * 3,
-    0,
-    Math.round((S.z + Math.sin(a) * r) / 3) * 3
-  );
+  let attempts = 0;
+  const maxAttempts = 50;
+  
+  do {
+    const a = Math.random() * Math.PI * 2;
+    const r = INCIDENT_MIN + Math.random() * (INCIDENT_MAX - INCIDENT_MIN);
+    S.target.set(
+      Math.round((S.x + Math.cos(a) * r) / 3) * 3,
+      0,
+      Math.round((S.z + Math.sin(a) * r) / 3) * 3
+    );
+    attempts++;
+    
+    // Use fast spatial check
+    if (isPositionClearFast(S.target.x, S.target.z, 4)) {
+      break;
+    }
+  } while (attempts < maxAttempts);
+  
+  // Fallback with expanded search
+  if (attempts >= maxAttempts) {
+    console.warn('Could not find clear incident location, expanding search');
+    const expandedRadius = INCIDENT_MAX * 1.5;
+    attempts = 0;
+    do {
+      const a = Math.random() * Math.PI * 2;
+      const r = INCIDENT_MIN + Math.random() * (expandedRadius - INCIDENT_MIN);
+      S.target.set(
+        Math.round((S.x + Math.cos(a) * r) / 3) * 3,
+        0,
+        Math.round((S.z + Math.sin(a) * r) / 3) * 3
+      );
+      attempts++;
+    } while (!isPositionClearFast(S.target.x, S.target.z, 4) && attempts < 30);
+  }
+  
   target.position.set(S.target.x, 1.1, S.target.z);
   ring.position.set(S.target.x, .15, S.target.z);
 }
