@@ -1,0 +1,5 @@
+# Hatchable project manifest. This file marks the folder as a
+# Hatchable project and declares the services it uses.
+# Reference: https://hatchable.com/docs/developers/config
+name = "Ingerman"
+description = "Standalone remastered Ingerman city-patrol game, also packaged as the Ingerman app inside BR3XALITY Android OS."
