@@ -6,15 +6,40 @@ const scene=new THREE.Scene();scene.background=new THREE.Color(0x071014);scene.f
 const camera=new THREE.PerspectiveCamera(52,1,.1,250);camera.position.set(0,11,22);
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 scene.add(new THREE.HemisphereLight(0x9bd8d0,0x071014,2));const sun=new THREE.DirectionalLight(0xc9fff0,3);sun.position.set(-35,60,20);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);scene.add(sun);
-const ground=new THREE.Mesh(new THREE.PlaneGeometry(150,150),new THREE.MeshStandardMaterial({color:0x0b191d,roughness:1}));ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground);
-function box(x,y,z,w,h,d,c){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.9}));m.position.set(x,h/2,z);m.castShadow=m.receiveShadow=true;scene.add(m);return m}
-for(let x=-60;x<=60;x+=15)box(x,.04,0,4,.08,145,0x18282c);for(let z=-60;z<=60;z+=15)box(0,.05,z,145,.1,4,0x18282c);
-for(let i=0;i<75;i++){const x=(i*37)%130-65,z=(i*61)%130-65;if(Math.abs(x%15)<3||Math.abs(z%15)<3)continue;box(x,0,z,5+(i%3)*2,4+(i%8)*2,5+(i%4),i%3?0x17282d:0x1d3338)}
+function box(parent,x,y,z,w,h,d,c){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.9}));m.position.set(x,h/2,z);m.castShadow=m.receiveShadow=true;parent.add(m);return m}
+// Progressive world streaming: only nearby chunks are generated, and chunks outside the
+// camera-facing region are hidden. This keeps the scene cheap as the player travels.
+const CHUNK_SIZE=30, LOAD_RADIUS=4, ACTIVE_RADIUS=3;
+const chunks=new Map();
+function hash2(x,z){let n=(x*374761393+z*668265263)|0;n=(n^(n>>>13))*1274126177;n^=n>>>16;return (n>>>0)/4294967296}
+function buildChunk(cx,cz){const key=`${cx},${cz}`;if(chunks.has(key))return chunks.get(key);const g=new THREE.Group();g.userData={cx,cz};
+  const ox=cx*CHUNK_SIZE,oz=cz*CHUNK_SIZE;
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(CHUNK_SIZE,CHUNK_SIZE),new THREE.MeshStandardMaterial({color:0x0b191d,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.set(ox,0,oz);floor.receiveShadow=true;g.add(floor);
+  // Roads are deterministic and continue seamlessly between chunks.
+  const roadX=new THREE.Mesh(new THREE.BoxGeometry(4,.08,CHUNK_SIZE),new THREE.MeshStandardMaterial({color:0x18282c,roughness:1}));roadX.position.set(ox,.04,oz);g.add(roadX);
+  const roadZ=roadX.clone();roadZ.rotation.y=Math.PI/2;roadZ.position.set(ox,0.05,oz);g.add(roadZ);
+  const seed=Math.floor(hash2(cx,cz)*0xffffffff);const count=4+(seed%4);
+  for(let i=0;i<count;i++){const rx=hash2(cx*17+i,cz*31+i)*CHUNK_SIZE-CHUNK_SIZE/2;const rz=hash2(cx*43+i,cz*11+i)*CHUNK_SIZE-CHUNK_SIZE/2;if(Math.abs(rx)<4||Math.abs(rz)<4)continue;const w=5+(i%3)*2,d=5+(i%4),h=4+(i%8)*2;box(g,ox+rx,0,oz+rz,w,h,d,i%3?0x17282d:0x1d3338)}
+  scene.add(g);chunks.set(key,g);return g}
+function updateChunks(){const pcx=Math.floor(S.x/CHUNK_SIZE),pcz=Math.floor(S.z/CHUNK_SIZE);const keep=new Set();for(let x=pcx-LOAD_RADIUS;x<=pcx+LOAD_RADIUS;x++)for(let z=pcz-LOAD_RADIUS;z<=pcz+LOAD_RADIUS;z++){if(Math.hypot(x-pcx,z-pcz)<=LOAD_RADIUS+0.5){const g=buildChunk(x,z);keep.add(`${x},${z}`)}}
+  // Hide distant chunks and dispose their geometry/materials after they leave the streaming radius.
+  for(const [key,g] of chunks){const dx=g.userData.cx-pcx,dz=g.userData.cz-pcz;const dist=Math.hypot(dx,dz);if(dist>LOAD_RADIUS+1){g.visible=false;for(const o of [...g.children]){if(o.geometry){o.geometry.dispose();if(o.material?.dispose)o.material.dispose()}}scene.remove(g);chunks.delete(key);continue}g.visible=dist<=ACTIVE_RADIUS+1}
+  // Camera-facing visibility pass: chunks behind the camera are not rendered.
+  const forward=new THREE.Vector3();camera.getWorldDirection(forward);for(const g of chunks.values()){if(!g.visible)continue;const center=new THREE.Vector3(g.userData.cx*CHUNK_SIZE,0,g.userData.cz*CHUNK_SIZE);const to=center.sub(camera.position);const distance=to.length();if(distance>CHUNK_SIZE*1.5){to.normalize();g.visible=forward.dot(to)>-0.15}}
+}
+updateChunks();
 const character=new THREE.Group();scene.add(character);const car=character;let ingermanModel=null;
 // The supplied GLB is the actual Ingerman humanoid. Start with nothing visible so a loader failure never masquerades as the character.
 import('https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/loaders/GLTFLoader.js').then(({GLTFLoader})=>{new GLTFLoader().load('/assets/ingerman.glb',g=>{ingermanModel=g.scene;ingermanModel.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true}});const bounds=new THREE.Box3().setFromObject(ingermanModel);const size=bounds.getSize(new THREE.Vector3());const height=Math.max(size.y,0.001);const scale=2.0/height;ingermanModel.scale.setScalar(scale);const scaledBounds=new THREE.Box3().setFromObject(ingermanModel);const center=scaledBounds.getCenter(new THREE.Vector3());ingermanModel.position.x-=center.x;ingermanModel.position.z-=center.z;const grounded=new THREE.Box3().setFromObject(ingermanModel);ingermanModel.position.y-=grounded.min.y;character.add(ingermanModel);}).catch(err=>console.error('Ingerman GLB failed to load',err));}).catch(err=>console.error('GLTFLoader failed to load',err));
 const target=new THREE.Mesh(new THREE.CylinderGeometry(1.1,.15,2.2,24),new THREE.MeshStandardMaterial({color:0x65e89a,emissive:0x65e89a,emissiveIntensity:1.5,transparent:true,opacity:.8}));target.position.copy(S.target);target.position.y=1.1;scene.add(target);const ring=new THREE.Mesh(new THREE.TorusGeometry(2.1,.09,10,40),new THREE.MeshBasicMaterial({color:0x8ff0ae}));ring.rotation.x=Math.PI/2;ring.position.copy(S.target);ring.position.y=.15;scene.add(ring);
-function newTarget(){S.target.set((Math.floor(Math.random()*9)-4)*15+3,0,(Math.floor(Math.random()*9)-4)*15+3);target.position.set(S.target.x,1.1,S.target.z);ring.position.set(S.target.x,.15,S.target.z)}
+const INCIDENT_MIN=18,INCIDENT_MAX=42;
+function newTarget(){
+  // Incidents are always dispatched in a bounded radius around the current player,
+  // rather than across the whole generated world.
+  const a=Math.random()*Math.PI*2;const r=INCIDENT_MIN+Math.random()*(INCIDENT_MAX-INCIDENT_MIN);
+  S.target.set(Math.round((S.x+Math.cos(a)*r)/3)*3,0,Math.round((S.z+Math.sin(a)*r)/3)*3);
+  target.position.set(S.target.x,1.1,S.target.z);ring.position.set(S.target.x,.15,S.target.z)
+}
 function resize(){const r=canvas.getBoundingClientRect();renderer.setSize(Math.max(1,r.width),Math.max(1,r.height),false);camera.aspect=Math.max(.1,r.width/r.height);camera.updateProjectionMatrix()}addEventListener('resize',resize);resize();
 function start(){S.running=true;S.paused=false;ui.status.textContent='Patrol started. Locate the green incident marker.';ui.hud.textContent='PATROL ACTIVE'}function pause(){if(!S.running)return;S.paused=!S.paused;ui.pause.textContent=S.paused?'Resume':'Pause';ui.status.textContent=S.paused?'Patrol paused.':'Patrol resumed.';ui.hud.textContent=S.paused?'PATROL PAUSED':'PATROL ACTIVE'}
 function secure(){if(!S.running||S.paused)return;const d=Math.hypot(S.x-S.target.x,S.z-S.target.z);if(d<5){S.score+=100;S.caseNo++;newTarget();ui.score.textContent=String(S.score).padStart(6,'0');ui.caseNo.textContent=String(S.caseNo).padStart(2,'0');ui.status.textContent='Scene secured. New incident dispatched.';ui.hud.textContent='NEW INCIDENT'}else ui.status.textContent='Too far away. Get closer to the green marker.'}
@@ -31,4 +56,4 @@ mctx.lineCap='butt';for(let world=-60;world<=60;world+=15){const [x1,y1]=map(wor
 mctx.fillStyle='rgba(23,40,45,.72)';for(let gx=-60;gx<60;gx+=15)for(let gz=-60;gz<60;gz+=15){const [x,y]=map(gx+4,gz+4);const size=11*scale;mctx.fillRect(x,y,size,size)}
 let [tx,tz]=map(S.target.x,S.target.z);mctx.fillStyle='#65e89a';mctx.beginPath();mctx.arc(tx,tz,5,0,Math.PI*2);mctx.fill();const [cx,cz]=[w/2,h/2];mctx.save();mctx.translate(cx,cz);mctx.rotate(-car.rotation.y);mctx.fillStyle='#fff';mctx.beginPath();mctx.moveTo(0,-9);mctx.lineTo(6,7);mctx.lineTo(0,4);mctx.lineTo(-6,7);mctx.closePath();mctx.fill();mctx.restore()}
 function loop(now){requestAnimationFrame(loop);const dt=Math.min((now-S.last)/1000,.05);S.last=now;if(S.running&&!S.paused){let dx=0,dz=0;if(S.keys.has('a')||S.keys.has('left'))dx--;if(S.keys.has('d')||S.keys.has('right'))dx++;if(S.keys.has('w')||S.keys.has('up'))dz--;if(S.keys.has('s')||S.keys.has('down'))dz++;dx-=S.moveX;dz+=S.moveY;const len=Math.hypot(dx,dz);if(len>.08){dx/=Math.max(1,len);dz/=Math.max(1,len);const speed=18;const yaw=S.lookYaw;// Movement is camera-relative: joystick up/W always moves toward the camera's forward direction, regardless of world north.
-const wx=dx*Math.cos(yaw)-dz*Math.sin(yaw);const wz=-dx*Math.sin(yaw)-dz*Math.cos(yaw);S.x=Math.max(-68,Math.min(68,S.x+wx*speed*dt));S.z=Math.max(-68,Math.min(68,S.z+wz*speed*dt));car.rotation.y=Math.atan2(wx,wz);car.position.set(S.x,0,S.z)}const d=Math.hypot(S.x-S.target.x,S.z-S.target.z);ui.status.textContent=d<5?'Incident reached — secure the scene.':'Navigate to the green incident marker.';ui.hud.textContent=d<5?'INCIDENT IN RANGE':'PATROL ACTIVE'}target.rotation.y+=dt*1.8;const pulse=1+Math.sin(now*.004)*.12;target.scale.setScalar(pulse);ring.scale.setScalar(1+Math.sin(now*.003)*.08);centerCamera();drawMinimap();renderer.render(scene,camera)}requestAnimationFrame(loop);
+const wx=dx*Math.cos(yaw)-dz*Math.sin(yaw);const wz=-dx*Math.sin(yaw)-dz*Math.cos(yaw);S.x=Math.max(-68,Math.min(68,S.x+wx*speed*dt));S.z=Math.max(-68,Math.min(68,S.z+wz*speed*dt));car.rotation.y=Math.atan2(wx,wz);car.position.set(S.x,0,S.z)}const d=Math.hypot(S.x-S.target.x,S.z-S.target.z);ui.status.textContent=d<5?'Incident reached — secure the scene.':'Navigate to the green incident marker.';ui.hud.textContent=d<5?'INCIDENT IN RANGE':'PATROL ACTIVE'}target.rotation.y+=dt*1.8;const pulse=1+Math.sin(now*.004)*.12;target.scale.setScalar(pulse);ring.scale.setScalar(1+Math.sin(now*.003)*.08);centerCamera();updateChunks();drawMinimap();renderer.render(scene,camera)}requestAnimationFrame(loop);
