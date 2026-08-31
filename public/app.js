@@ -14,17 +14,51 @@ const CHUNK_SIZE=30,LOAD_RADIUS=4,ACTIVE_RADIUS=3;
 const chunks=new Map();
 const city={roads:[],buildings:[]};
 function hash2(x,z){let n=(x*374761393+z*668265263)|0;n=(n^(n>>>13))*1274126177;n^=n>>>16;return (n>>>0)/4294967296}
-function roadInfo(axis,coord){const a=Math.abs(Math.round(coord));if(a%90===0)return{type:'freeway',width:8,color:0x202c30};if(a%45===0)return{type:'boulevard',width:6,color:0x1d292d};if(a%15===0)return{type:'avenue',width:4.5,color:0x18262a};return null}
-function nearestRoad(x,z){let best=null;for(let c=-240;c<=240;c+=15)for(const axis of ['x','z']){const info=roadInfo(axis,c);if(!info)continue;const distance=axis==='x'?Math.abs(z-c):Math.abs(x-c);if(!best||distance<best.distance)best={axis,coord:c,distance,...info}}return best}
-function roadAt(x,z){const r=nearestRoad(x,z);return r&&r.distance<r.width/2+1.5}
-function roadName(coord,type){const names=['Main','Market','Oak','Pine','Cedar','Lincoln','Central','River','Park','Sunset','Liberty','Maple','Broad','Union','First','Second'];const base=names[Math.abs(Math.round(coord/15))%names.length];return `${base} ${type==='freeway'?'Freeway':type==='boulevard'?'Blvd':'Avenue'}`}
-function addSign(g,x,z,text,rot){const pole=new THREE.Mesh(new THREE.CylinderGeometry(.035,.035,1.5,6),mat(0x697477));pole.position.set(x,.75,z);g.add(pole);const sign=new THREE.Mesh(new THREE.BoxGeometry(1.2,.3,.05),mat(0x24523e));sign.position.set(x,1.45,z);sign.rotation.y=rot;g.add(sign);const c=document.createElement('canvas');c.width=256;c.height=64;const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.font='bold 24px Arial';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,128,32);const plate=new THREE.Mesh(new THREE.PlaneGeometry(1.08,.27),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(c),transparent:true}));plate.position.set(x,1.45,z);plate.rotation.y=rot;g.add(plate)}
-function addRoad(g,axis,coord,info,ox,oz){const len=CHUNK_SIZE+1;const m=new THREE.Mesh(new THREE.BoxGeometry(axis==='x'?len:info.width,.09,axis==='z'?len:info.width),mat(info.color));m.position.set(axis==='x'?ox:coord,.045,axis==='x'?coord:oz);g.add(m);city.roads.push({axis,coord,type:info.type,width:info.width,x1:axis==='x'?ox-len/2:coord-info.width/2,x2:axis==='x'?ox+len/2:coord+info.width/2,z1:axis==='x'?coord-info.width/2:oz-len/2,z2:axis==='x'?coord+info.width/2:oz+len/2})}
+const ROAD_NAMES=['Main','Market','Oak','Pine','Cedar','Lincoln','Central','River','Park','Sunset','Liberty','Maple','Broadway','Union','First','Second','Franklin','Washington','Madison','Jefferson'];
+function roadName(index,type){const base=ROAD_NAMES[Math.abs(index|0)%ROAD_NAMES.length];return `${base} ${type==='freeway'?'Freeway':type==='boulevard'?'Blvd':type==='avenue'?'Avenue':'St'}`}
+function segmentDistance(px,pz,x1,z1,x2,z2){const dx=x2-x1,dz=z2-z1;const t=Math.max(0,Math.min(1,((px-x1)*dx+(pz-z1)*dz)/(dx*dx+dz*dz||1)));const x=x1+dx*t,z=z1+dz*t;return Math.hypot(px-x,pz-z)}
+function seeded(a,b,c=0){return hash2((a*92821+b*68917+c*31337)|0,(b*19211+c*47297+a*8191)|0)}
+function globalRoadSegments(){
+  const roads=[];
+  const addPolyline=(points,type,width,nameIndex)=>{for(let i=0;i<points.length-1;i++){const [x1,z1]=points[i],[x2,z2]=points[i+1];roads.push({x1,z1,x2,z2,type,width,color:type==='freeway'?0x273337:type==='boulevard'?0x26363a:type==='avenue'?0x202f33:0x1a292d,name:roadName(nameIndex+i,type)});}};
+  // A handful of sweeping arterials form the city's backbone; none are aligned to a grid.
+  for(let lane=-1;lane<=1;lane++){
+    const pts=[];for(let x=-360;x<=360;x+=30){const z=lane*92+Math.sin(x/78+lane*.9)*25+Math.sin(x/31+lane)*7;pts.push([x,z])}addPolyline(pts,lane===0?'boulevard':'avenue',lane===0?6.5:4.2,20+lane*3)
+  }
+  for(let lane=-1;lane<=1;lane++){
+    const pts=[];for(let z=-360;z<=360;z+=30){const x=lane*115+Math.sin(z/91+lane)*30+Math.sin(z/37)*8;pts.push([x,z])}addPolyline(pts,lane===0?'boulevard':'avenue',lane===0?6.2:4.0,30+lane*4)
+  }
+  const freeway=[];for(let x=-360;x<=360;x+=30)freeway.push([x,150+Math.sin(x/115)*32+x*.08]);addPolyline(freeway,'freeway',9,3);
+  // Curved neighborhood streets are generated from deterministic edge-to-edge routes.
+  for(let row=-5;row<=5;row++){const base=row*58+Math.sin(row*2.7)*11;const pts=[];for(let x=-330;x<=330;x+=30)pts.push([x,base+Math.sin(x/43+row)*8+Math.sin(x/17+row*3)*3]);addPolyline(pts,'street',3.1,60+row)}
+  for(let col=-5;col<=5;col++){const base=col*61+Math.sin(col*1.8)*9;const pts=[];for(let z=-330;z<=330;z+=30)pts.push([base+Math.sin(z/47+col)*7+Math.sin(z/19)*3,z]);addPolyline(pts,'street',3.0,80+col)}
+  return roads
+}
+const WORLD_ROADS=globalRoadSegments();
+function nearestRoad(x,z){let best=null;for(const r of WORLD_ROADS){const distance=segmentDistance(x,z,r.x1,r.z1,r.x2,r.z2);if(!best||distance<best.distance)best={...r,distance}}return best}
+function roadAt(x,z){const r=nearestRoad(x,z);return !!(r&&r.distance<r.width/2+2.2)}
+function addSign(g,x,z,text,rot){const pole=new THREE.Mesh(new THREE.CylinderGeometry(.035,.035,1.5,6),mat(0x697477));pole.position.set(x,.75,z);g.add(pole);const sign=new THREE.Mesh(new THREE.BoxGeometry(1.45,.34,.05),mat(0x24523e));sign.position.set(x,1.45,z);sign.rotation.y=rot;g.add(sign);const c=document.createElement('canvas');c.width=256;c.height=64;const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.font='bold 22px Arial';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,128,32);const plate=new THREE.Mesh(new THREE.PlaneGeometry(1.3,.3),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(c),transparent:true}));plate.position.set(x,1.45,z);plate.rotation.y=rot;g.add(plate)}
+function addRoad(g,r,ox,oz){const dx=r.x2-r.x1,dz=r.z2-r.z1,len=Math.hypot(dx,dz);if(len<1)return;const m=new THREE.Mesh(new THREE.BoxGeometry(len,.09,r.width),mat(r.color));m.position.set((r.x1+r.x2)/2,.045,(r.z1+r.z2)/2);m.rotation.y=-Math.atan2(dz,dx);g.add(m);city.roads.push(r)}
 function buildChunk(cx,cz){const key=`${cx},${cz}`;if(chunks.has(key))return chunks.get(key);const g=new THREE.Group();g.userData={cx,cz};const ox=cx*CHUNK_SIZE,oz=cz*CHUNK_SIZE;const floor=new THREE.Mesh(new THREE.PlaneGeometry(CHUNK_SIZE,CHUNK_SIZE),new THREE.MeshStandardMaterial({color:0x0b191d,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.set(ox,0,oz);floor.receiveShadow=true;g.add(floor);
-  for(let c=Math.floor((oz-CHUNK_SIZE)/15)*15;c<=oz+CHUNK_SIZE;c+=15){const info=roadInfo('x',c);if(info)addRoad(g,'x',c,info,ox,oz)}
-  for(let c=Math.floor((ox-CHUNK_SIZE)/15)*15;c<=ox+CHUNK_SIZE;c+=15){const info=roadInfo('z',c);if(info)addRoad(g,'z',c,info,ox,oz)}
-  const local=[];for(let px=ox-13;px<=ox+13;px+=15)for(let pz=oz-13;pz<=oz+13;pz+=15){const x=px+(hash2(px+cx*17,pz+cz*31)-.5)*4,z=pz+(hash2(px+cx*43,pz+cz*11)-.5)*4;const r=nearestRoad(x,z);if(r&&r.distance<r.width/2+3)continue;const w=6+hash2(x,z)*5,d=6+hash2(z+9,x+7)*5,h=4+Math.floor(hash2(x*3,z*5)*6)*2;if(roadAt(x-w/2-1,z)||roadAt(x+w/2+1,z)||roadAt(x,z-d/2-1)||roadAt(x,z+d/2+1))continue;if(local.some(b=>Math.abs(b.x-x)<(b.w+w)/2+1&&Math.abs(b.z-z)<(b.d+d)/2+1))continue;box(g,x,0,z,w,h,d,h>=12?0x20383d:h>=8?0x1a3035:0x17282d);const b={x,z,w,d,h};local.push(b);city.buildings.push(b)}
-  for(let rx=Math.floor((ox-15)/15)*15;rx<=ox+15;rx+=15)for(let rz=Math.floor((oz-15)/15)*15;rz<=oz+15;rz+=15){const a=roadInfo('x',rz),b=roadInfo('z',rx);if(a&&b&&hash2(rx,rz)>.18){addSign(g,rx+2.3,rz+2.3,roadName(rz,a.type),0);addSign(g,rx-2.3,rz-2.3,roadName(rx,b.type),Math.PI/2)}}
+  // Only add road segments that touch this chunk. This makes the road network organic
+  // while still letting every chunk be streamed independently.
+  for(const r of WORLD_ROADS){const minX=Math.min(r.x1,r.x2)-r.width,maxX=Math.max(r.x1,r.x2)+r.width,minZ=Math.min(r.z1,r.z2)-r.width,maxZ=Math.max(r.z1,r.z2)+r.width;if(maxX>=ox-CHUNK_SIZE/2&&minX<=ox+CHUNK_SIZE/2&&maxZ>=oz-CHUNK_SIZE/2&&minZ<=oz+CHUNK_SIZE/2)addRoad(g,r,ox,oz)}
+  const local=[];
+  // Scatter buildings by open land parcels instead of a rigid X/Y grid. Buildings are
+  // explicitly rejected when their footprint gets near a road or another building.
+  for(let i=0;i<28;i++){
+    const x=ox-CHUNK_SIZE/2+2+seeded(cx,cz,i)*(CHUNK_SIZE-4),z=oz-CHUNK_SIZE/2+2+seeded(cz,cx,i+77)*(CHUNK_SIZE-4);
+    const r=nearestRoad(x,z);if(r&&r.distance<r.width/2+3.5)continue;
+    const w=4.5+seeded(cx,cz,i+11)*7,d=4.5+seeded(cz,cx,i+29)*7,h=3.5+Math.floor(seeded(cx,cz,i+41)*7)*2;
+    const corners=[[x-w/2-1,z-d/2-1],[x+w/2+1,z-d/2-1],[x-w/2-1,z+d/2+1],[x+w/2+1,z+d/2+1]];
+    if(corners.some(([px,pz])=>{const rr=nearestRoad(px,pz);return rr&&rr.distance<rr.width/2+1.2}))continue;
+    if(local.some(b=>Math.abs(b.x-x)<(b.w+w)/2+1.2&&Math.abs(b.z-z)<(b.d+d)/2+1.2))continue;
+    const b={x,z,w,d,h};box(g,x,0,z,w,h,d,h>=14?0x2a4549:h>=9?0x21393d:0x1a3034);local.push(b);city.buildings.push(b);
+    // A few buildings get a small roof detail to make the skyline less blocky.
+    if(h>=12)box(g,x, h, z, w*.35,.8,d*.35,0x304c50);
+  }
+  // Put street signs near actual road intersections, not on an artificial grid.
+  for(const a of WORLD_ROADS){for(const b of WORLD_ROADS){if(a===b||a.type==='street'&&b.type==='street')continue;const ax=a.x2-a.x1,az=a.z2-a.z1,bx=b.x2-b.x1,bz=b.z2-b.z1;const den=ax*bz-az*bx;if(Math.abs(den)<.001)continue;const t=((b.x1-a.x1)*bz-(b.z1-a.z1)*bx)/den,u=((b.x1-a.x1)*az-(b.z1-a.z1)*ax)/den;if(t<.05||t>.95||u<.05||u>.95)continue;const ix=a.x1+t*ax,iz=a.z1+t*az;if(Math.abs(ix-ox)>CHUNK_SIZE/2+4||Math.abs(iz-oz)>CHUNK_SIZE/2+4)continue;const key=Math.round(ix)+','+Math.round(iz);if(g.userData.signs?.has(key))continue;g.userData.signs=g.userData.signs||new Set();g.userData.signs.add(key);addSign(g,ix+1.4,iz+1.4,a.name,Math.atan2(ax,az));addSign(g,ix-1.4,iz-1.4,b.name,Math.atan2(bx,bz));break}}
   scene.add(g);chunks.set(key,g);return g}
 function updateChunks(){const pcx=Math.floor(S.x/CHUNK_SIZE),pcz=Math.floor(S.z/CHUNK_SIZE);const keep=new Set();for(let x=pcx-LOAD_RADIUS;x<=pcx+LOAD_RADIUS;x++)for(let z=pcz-LOAD_RADIUS;z<=pcz+LOAD_RADIUS;z++){if(Math.hypot(x-pcx,z-pcz)<=LOAD_RADIUS+0.5){const g=buildChunk(x,z);keep.add(`${x},${z}`)}}
   // Hide distant chunks and dispose their geometry/materials after they leave the streaming radius.
